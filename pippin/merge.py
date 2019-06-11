@@ -39,6 +39,31 @@ class Merger(Task):
     def _check_completion(self, squeue):
         if os.path.exists(self.done_file):
             self.logger.debug(f"Merger finished, see combined fitres at {self.done_file}")
+
+            # Copy MERGE.LOG and FITOPT.README if they aren't there
+            filenames = ["MERGE.LOG", "FITOPT.README"]
+            for f in filenames:
+                original = os.path.join(self.lc_fit["lc_output_dir"], f)
+                moved = os.path.join(self.output_dir, f)
+                if not os.path.exists(moved):
+                    self.logger.debug("Copying file {f} into output directory")
+                    shutil.move(original, moved)
+
+            # Dick around with folders and names to make it resemble split_and_fit output for salt2mu
+            outdir = os.path.join(self.output_dir, self.lc_fit["genversion"])
+            new_output = os.path.join(outdir, "FITOPT000.FITRES")
+            if not os.path.exists(outdir):
+                os.makedirs(outdir, exist_ok=True)
+
+                original_output = self.done_file
+                shutil.move(original_output, new_output)
+
+                # Recreate done file -_-
+                with open(self.done_file, "w") as f:
+                    f.write("SUCCESS")
+
+            self.output["fitres_file"] = new_output
+            self.output["fitres_dir"] = outdir
             return Task.FINISHED_SUCCESS
         else:
             output_error = False
@@ -69,11 +94,10 @@ class Merger(Task):
             shutil.rmtree(self.output_dir, ignore_errors=True)
             mkdirs(self.output_dir)
             self.logger.debug("Regenerating, running combine_fitres")
+            self.save_new_hash(new_hash)
             with open(self.logfile, "w") as f:
                 subprocess.run(command, stdout=f, stderr=subprocess.STDOUT, cwd=self.output_dir)
         else:
             self.logger.debug("Not regnerating")
-        self.output["fitres_file"] = self.done_file
-        self.output["fitres_dir"] = os.path.dirname(self.done_file)
         return True
 

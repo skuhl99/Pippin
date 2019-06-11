@@ -3,6 +3,8 @@ import subprocess
 import json
 import shutil
 import pickle
+from collections import OrderedDict
+
 from pippin.classifiers.classifier import Classifier
 from pippin.config import chown_dir, mkdirs, get_config, get_output_loc
 from pippin.task import Task
@@ -48,7 +50,7 @@ source activate {conda_env}
 module load cuda
 echo `which python`
 cd {path_to_classifier}
-python run.py --data --sntypes '{sntypes}' --dump_dir {dump_dir} --raw_dir {photometry_dir} {fit_dir} {phot} {test_or_train}
+python run.py --data --sntypes '{sntypes}' --dump_dir {dump_dir} --raw_dir {photometry_dir} {fit_dir} {phot} {clump} {test_or_train}
 python run.py --use_cuda {cyclic} --sntypes '{sntypes}' --done_file {done_file} --dump_dir {dump_dir} {cyclic} {variant} {model} {phot} {command}
         """
         self.conda_env = self.global_config["SuperNNova"]["conda_env"]
@@ -57,7 +59,7 @@ python run.py --use_cuda {cyclic} --sntypes '{sntypes}' --done_file {done_file} 
     def get_model_and_pred(self):
         model_folder = self.dump_dir + "/models"
         files = [f for f in os.listdir(model_folder) if os.path.isdir(os.path.join(model_folder, f))]
-        assert len(files) == 1, f"More than one directory found: {str(files)}"
+        assert len(files) == 1, f"Did not find singular output file: {str(files)}"
         saved_dir = os.path.abspath(os.path.join(model_folder, files[0]))
 
         subfiles = list(os.listdir(saved_dir))
@@ -98,14 +100,23 @@ python run.py --use_cuda {cyclic} --sntypes '{sntypes}' --done_file {done_file} 
             assert os.path.exists(model_path), f"Cannot find {model_path}"
 
         types = self.get_types()
+        if types is None:
+            types = OrderedDict({"1": "Ia", "0": "unknown", "2": "SNIax", "3": "SNIa-pec", "20": "SNIIP", "21": "SNIIL", "22": "SNIIn", "29": "SNII", "32": "SNIb", "33": "SNIc", "39": "SNIbc", "41": "SLSN-I", "42": "SLSN-II", "43": "SLSN-R", "80": "AGN", "81": "galaxy", "98": "None", "99": "pending"})
         str_types = json.dumps(types)
-        light_curve_dir = self.get_simulation_dependency().output.get("skimmed_photometry_dir")
-        if light_curve_dir is None:
-            light_curve_dir = self.get_simulation_dependency().output["photometry_dir"]
+
+        sim_dep = self.get_simulation_dependency()
+        light_curve_dir = sim_dep.output["photometry_dir"]
         fit = self.get_fit_dependency()
         fit_dir = f"" if fit is None else f"--fits_dir {fit['fitres_dir']}"
         cyclic = "--cyclic" if self.variant in ["vanilla", "variational"] else ""
         variant = f"--model {self.variant}"
+
+        clump = sim_dep.output.get("clump_file")
+        if clump is None:
+            clump_txt = ""
+        else:
+            clump_txt = f"--photo_window_files {clump}"
+
         format_dict = {
             "conda_env": self.conda_env,
             "dump_dir": self.dump_dir,
@@ -120,7 +131,8 @@ python run.py --use_cuda {cyclic} --sntypes '{sntypes}' --done_file {done_file} 
             "model": "" if training else f"--model_files {model_path}",
             "phot": "" if not use_photometry else "--source_data photometry",
             "test_or_train": "" if training else "--data_testing",
-            "done_file": self.done_file
+            "done_file": self.done_file,
+            "clump": clump_txt
         }
 
         slurm_output_file = self.output_dir + "/job.slurm"
@@ -160,9 +172,10 @@ python run.py --use_cuda {cyclic} --sntypes '{sntypes}' --done_file {done_file} 
                 if not os.path.exists(new_model_file):
                     if model is not None:
                         shutil.move(model, new_model_file)
-                        args_old, args_new = os.path.abspath(
-                            os.path.join(os.path.dirname(model), "cli_args.json")), self.output_dir + "/cli_args.json"
+                        args_old, args_new = os.path.abspath(os.path.join(os.path.dirname(model), "cli_args.json")), self.output_dir + "/cli_args.json"
+                        norm_old, norm_new = os.path.abspath(os.path.join(os.path.dirname(model), "data_norm.json")), self.output_dir + "/data_norm.json"
                         shutil.move(args_old, args_new)
+                        shutil.move(norm_old, norm_new)
                         self.logger.info(f"Model file can be found at {new_model_file}")
                 if not os.path.exists(new_pred_file):
                     with open(predictions, "rb") as f:
